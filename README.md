@@ -87,7 +87,7 @@ Approximate EMF rendering and ExtGStates creation timings as a function of the n
 |  64k             |  100 s           |   653ms (0.65%)   | 
 |  128k            |  504 s           |   1.3s  (0.25%)   | 
       
-Happily, the expected number of distinct ExtGStates in a typical PDF is below 1000, and in a large, complex PDFs is often below 10k. Adding of ExtGStates was calculated with mtMultiPoly setting of TMetaEstChannel. Adding of ExtGStates with mtSinglePoly would be almost five times shorter.
+Happily, the expected number of distinct ExtGStates in a typical PDF is below 1000, and in a large, complex PDFs is often below 10k. Adding of ExtGStates was measured with mtMultiPoly setting of TMetaEstChannel. Time cost of adding ExtGStates with mtSinglePoly would be almost five times shorter.
   
 Author and Contact:
 ---------
