@@ -23,6 +23,7 @@ Each generated example pdf  is very simple and contains two pages:
  ![Screenshot of a PDF generated with TPdfCanvas commands](/assets/images/example1.png) -->
 
 <img width="340" height="210" alt="Example" src="https://github.com/user-attachments/assets/9222f531-a0d2-4f93-8280-7736e27c826c" />
+
 ![Link to PDF: /documents/alpha_blending_with_GDI_and_MetaExtChannel.pdf](/documents/alpha_blending_with_GDI_and_MetaExtChannel.pdf)
 
 
