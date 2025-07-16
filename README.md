@@ -25,7 +25,7 @@ To generate pages of the second file, one can use procedures:
 
 Programming Interface:
 --------
-The proposed interface is constructed with stress put on the simplicity of its use.
+The proposed interface exposed in [__SynPdf.pas__](SynPdf.pas) is constructed with stress put on the simplicity of its use.
 
 To send PDF commands through EMF/TMetafileCanvas one can use a set of provided wrappers of TMetaExtChannel methods:
 ```
