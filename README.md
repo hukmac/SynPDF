@@ -18,8 +18,11 @@ Each generated example pdf  is very simple and contains two pages:
   - First: with alpha blending effects (semi-transparent shapes and text),
   - Second: the same content without alpha blending for comparison.
 
-![Screenshot of a PDF generated with TPdfCanvas commands](/assets/images/example1.png)
+<!--<img width="1920" height="1200" alt="Image" src="https://github.com/user-attachments/assets/d689ba2d-eab8-4c6f-82e4-96fbaa0af84f" />
+<img width="1920" height="1200" alt="Image" src="https://github.com/user-attachments/assets/9222f531-a0d2-4f93-8280-7736e27c826c" />
+ ![Screenshot of a PDF generated with TPdfCanvas commands](/assets/images/example1.png) -->
 
+<img width="960" height="600" alt="Example" src="https://github.com/user-attachments/assets/9222f531-a0d2-4f93-8280-7736e27c826c" />
 ![Screenshot of a PDF generated with EMF/TMetaExtChannel commands](/assets/images/example2.png)
 
 
