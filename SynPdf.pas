@@ -1,7 +1,6 @@
 /// PDF file generation
 // - this unit is based on a part of the freeware Synopse framework,
-// licensed under a MPL/GPL/LGPL tri-license;
-// version 1.18a (unofficial)
+// licensed under a MPL/GPL/LGPL tri-license; version 1.18a (unofficial)
 // - includes basic implementation of ExtGState and control of alpha
 //   blending with commands at the PDF level (direct) and at the
 //   GDI level (sent through EMF)
@@ -6703,12 +6702,7 @@ procedure TPdfCanvas.SetPage(APage: TPdfPage);
 begin
   FPage := APage;
   FPageFontList := FPage.GetResources('Font');
-
-  //disabled to perform late init of ExtGState dictionary
-  //it will be added not earlier than first ExtGState will be added to a page
-  //FPageExtGStateList := FPage.GetResources('ExtGState');  //early init
   FPageExtGStateList := nil;  //late init will be used
-
   FContents := TPdfStream(FPage.ValueByName('Contents'));
   FFactor := 72/FDoc.FScreenLogPixels; // PDF expect 72 pixels per inch
 end;
@@ -9480,7 +9474,7 @@ end;
 {TMetaExtChannel}
 
 // TMetaExtChannel provides a simple mechanism to encode PDF commands
-// (like alpha blending and save/restore operations) into a GDI-based
+// (like alpha blending and save/restore operations) into a EMF-based
 // metafile stream by using special "signal" shapes based on polylines.
 //
 // These signal shapes, when identified during EMF parsing, can be
@@ -9506,8 +9500,8 @@ end;
 // Remarks:
 //
 // 1: If speed is crucial, try using mtSinglePoly or mtMultiRect.
-//    One call to SetAlphaBlend takes 10.2 µs with mtMultiPoly, and
-//    2.1 µs with SinglePoly (i9-9900K 3.6 GHz).
+//    One call to SetAlphaBlend takes 10.2 Âµs with mtMultiPoly, and
+//    2.1 Âµs with SinglePoly (i9-9900K 3.6 GHz).
 // 2: The message transport was tested to work correctly even
 //    when the target canvas size is below 16x16 points, but please
 //    pay special attention in such cases.
