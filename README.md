@@ -22,7 +22,7 @@ Each generated example pdf  is very simple and contains two pages:
 <img width="1920" height="1200" alt="Image" src="https://github.com/user-attachments/assets/9222f531-a0d2-4f93-8280-7736e27c826c" />
  ![Screenshot of a PDF generated with TPdfCanvas commands](/assets/images/example1.png) -->
 
-<img width="480" height="300" alt="Example" src="https://github.com/user-attachments/assets/9222f531-a0d2-4f93-8280-7736e27c826c" />
+<img width="340" height="210" alt="Example" src="https://github.com/user-attachments/assets/9222f531-a0d2-4f93-8280-7736e27c826c" />
 
 <!--![Screenshot of a PDF generated with EMF/TMetaExtChannel commands](/assets/images/example2.png) -->
 
