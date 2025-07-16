@@ -1,6 +1,10 @@
 /// PDF file generation
-// - this unit is a part of the freeware Synopse framework,
-// licensed under a MPL/GPL/LGPL tri-license; version 1.18
+// - this unit is based on a part of the freeware Synopse framework,
+// licensed under a MPL/GPL/LGPL tri-license;
+// version 1.18a (unofficial)
+// - includes basic implementation of ExtGState and control of alpha
+//   blending with commands at the PDF level (direct) and at the
+//   GDI level (sent through EMF)
 unit SynPdf;
 
 {
@@ -52,6 +56,7 @@ unit SynPdf;
    Pierre le Riche
    Sinisa (sinisav)
    Sundazer
+   Maciej Huk
 
   Alternatively, the contents of this file may be used under the terms of
   either the GNU General Public License Version 2 or later (the "GPL"), or
@@ -176,6 +181,18 @@ unit SynPdf;
   {$define USE_GRAPHICS_UNIT}
 {$endif}
 
+{$define USE_META_EXT_CHANNEL}
+{ if defined, the PDF engine will support commands not available
+  in EMF/GDI, allowing extended support of alpha blending and GState
+  save/restore. It is useful when pdf content is created by drawing
+  with GDI on TCanvas and alpha blending is needed. In such cases
+  please consider using SetAlphaBlend, SetAlphaBlendMode, GSave,
+  and GRestore wrappers for simplicity.}
+{$ifdef NO_USE_META_EXT_CHANNEL}
+  {$undef USE_META_EXT_CHANNEL}
+{$endif}
+
+
 interface
 
 uses
@@ -219,6 +236,19 @@ uses
   {$endif}
   SynCommons,
   SynLZ;
+
+
+//Blend modes to be set within ExtGState
+type TPdfBlendMode = (
+    bmNormal, bmMultiply, bmScreen, bmOverlay, bmDarken, bmLighten,
+    bmColorDodge, bmColorBurn, bmHardLight, bmSoftLight, bmDifference,
+    bmExclusion, bmHue, bmSaturation, bmColor, bmLuminosity);
+
+const
+  PdfBlendModeNames: array[TPdfBlendMode] of string = (
+    'Normal', 'Multiply', 'Screen', 'Overlay', 'Darken', 'Lighten',
+    'ColorDodge', 'ColorBurn', 'HardLight', 'SoftLight', 'Difference',
+    'Exclusion', 'Hue', 'Saturation', 'Color', 'Luminosity');
 
 const
   MWT_IDENTITY = 1;
@@ -970,6 +1000,8 @@ type
     procedure AddItem(const AKey, AValue: PDFString); overload; {$ifdef HASINLINE}inline;{$endif}
     /// add a specified Key / Value pair (of type TPdfNumber) to the dictionary
     procedure AddItem(const AKey: PDFString; AValue: integer); overload; {$ifdef HASINLINE}inline;{$endif}
+    /// add a specified Key / Value pair (of type TPdfReal) to the dictionary
+    procedure AddItem(const AKey: PDFString; AValue: Double); overload; {$ifdef HASINLINE}inline;{$endif}
     /// add a specified Key / Value pair (of type TPdfText) to the dictionary
     procedure AddItemText(const AKey, AValue: PDFString); overload; {$ifdef HASINLINE}inline;{$endif}
     /// add a specified Key / Value pair (of type TPdfTextUTF8) to the dictionary
@@ -1143,6 +1175,45 @@ type
   /// set of font styles
   TPdfFontStyles = set of TPdfFontStyle;
 
+  /// Type used to form a document's global list of ExtGState PDF
+  //  settings (alpha, blending mode), with references to their
+  //  definitions in the PDF xref (IDs kept in ObjectNumber). These
+  //  objects are added to TPdfCanvas.FPageExtGStateList when related
+  //  ExtGStates are used on a given PDF page.
+  //
+  //Remarks:
+  //
+  //1. ExtGState objects are now including only the information about
+  //   alpha stroke&fill and blending mode (CA, ca, BM). Other elements
+  //   such as font selection, line width (LW), line cap (LC), dash
+  //   pattern (D), or mitter limit (ML) are not included in the
+  //   current implementation of ExtGState. This is for further
+  //   development. Contrary, stroke&fill colors are not elements
+  //   of ExtGState by definition (ISO32000).
+  //2. Related TPdfCanvas.FPageExtGStateList is late initialised.
+  //   This is why /ExtGState dictionary is created and added to
+  //   /Resources dictionary not in TPdfDocument.AddPage but in
+  //   TPdfCanvas.RegisterExtGState.
+  //
+  //TODO: Add possibility to create ExtGStates with selected settings
+  //      (e.g. ca and CA, without BM).
+
+  PPdfExtGState = ^TPdfExtGState;
+  TPdfExtGState = class(TPdfObject)
+  private
+    name :String;
+    alpha_fill, alpha_stroke :Double; //values 0-1
+    blend_mode :TPdfBlendMode;
+    constructor Create; overload;
+  public
+    constructor Create(const aName: String; const aAlpha_fill, aAlpha_stroke: Double; const aMode: TPdfBlendMode); overload;
+    procedure SetName(const aName: String);
+    procedure SetAlphaFill(const aAlpha: Double);
+    procedure SetAlphaStroke(const aAlpha: Double);
+    procedure SetAlpha(const aAlpha_fill, aAlpha_stroke: Double);
+    procedure SetBlendMode(const aMode: TPdfBlendMode);
+  end;
+
   /// the main class of the PDF engine, processing the whole PDF document
   TPdfDocument = class(TObject)
   protected
@@ -1155,6 +1226,7 @@ type
     FXref: TPdfXref;
     FInfo: TPdfInfo;
     FFontList: TList;
+    FExtGStateList: TList;
     FObjectList: TList;
     FOutlineRoot: TPdfOutlineRoot;
     FStructTree: TPdfDictionary;
@@ -1201,6 +1273,7 @@ type
     fCurrentObjectNumber: integer;
     fCurrentGenerationNumber: integer;
     {$endif USE_PDFSECURITY}
+
     function GetGeneratePDF15File: boolean;
     procedure SetGeneratePDF15File(const Value: boolean);
     function GetInfo: TPdfInfo;     {$ifdef HASINLINE}inline;{$endif}
@@ -1274,6 +1347,13 @@ type
     procedure NewDoc;
     /// add a Page to the current PDF document
     function AddPage: TPdfPage; virtual;
+
+    function FindExtGState(const aAlpha_fill, aAlpha_stroke: Single; aBlend_mode :TPdfBlendMode): TPdfExtGState;
+    /// register an ExtGState to the internal FExtGStateList
+    function AddExtGState(const aName: PDFString; const aAlpha_fill, aAlpha_stroke: Single; aBlend_mode :TPdfBlendMode): TPdfExtGState;
+    function GetOrAddExtGState(const aAlpha_fill, aAlpha_stroke: Single; aBlend_mode :TPdfBlendMode): TPdfExtGState;
+    function AddExtGState2Xref(pgs :PPdfExtGState): Integer;
+
     /// register a font to the internal TTF font list
     // - some fonts may not be enumerated in the system, e.g. after calling
     // AddFontMemResourceEx, so could be registered by this method
@@ -1376,6 +1456,7 @@ type
     // - ContentGroups is a array of TPdfOptionalContentGroups which should behave like
     // radiobuttons, i.e. only one active at a time
     // - visibility must be set with CreateOptionalContentGroup, only one group should be visible
+
     procedure CreateOptionalContentRadioGroup(const ContentGroups: array of TPdfOptionalContentGroup);
     /// retrieve the current PDF Canvas, associated to the current page
     property Canvas: TPdfCanvas read fCanvas;
@@ -1533,6 +1614,7 @@ type
     function GetPageWidth: Integer;
     function GetPageHeight: Integer;
     function GetResources(const AName: PDFString): TPdfDictionary; {$ifdef HASINLINE}inline;{$endif}
+    function AddExtGStateDictToResources: TPdfDictionary;
   public
     /// create the page with its internal VCL Canvas
     constructor Create(ADoc: TPdfDocument); reintroduce; virtual;
@@ -1601,6 +1683,7 @@ type
     FContents: TPdfStream;
     FPage: TPdfPage;
     FPageFontList: TPdfDictionary;
+    FPageExtGStateList: TPdfDictionary;
     FDoc: TPdfDocument;
     // = 72/FDoc.FScreenLogPixels
     FFactor: single;
@@ -1624,6 +1707,9 @@ type
     FEmfBounds: TRect;
     FPrinterPxPerInch: TPoint;
     FNewPath: Boolean;
+    //actual settings of ExtGState
+    FAlpha_stroke, FAlpha_fill :Single; //0-1
+    FBlend_mode :TPdfBlendMode;
     {$ifdef USE_UNISCRIBE}
     /// if Uniscribe-related methods must handle the text from right to left
     fRightToLeftText: Boolean;
@@ -1674,6 +1760,11 @@ type
     // property getters
     function GetDoc: TPdfDocument;    {$ifdef HASINLINE}inline;{$endif}
     function GetPage: TPdfPage;       {$ifdef HASINLINE}inline;{$endif}
+
+    //writes usage of given ExtGState to page contents stream
+    procedure AddExtGStateToContents(gs :TPdfExtGState);
+    //adds ExtGState reference to /ExtGState<<>> in page /Resources
+    procedure RegisterExtGState(gs :TPdfExtGState);
   public
     /// create the PDF canvas instance
     constructor Create(APdfDoc: TPdfDocument);
@@ -1683,6 +1774,16 @@ type
     /// restores the entire graphics state to its former value by popping
     // it from the stack
     procedure GRestore;                                          {  Q   }
+
+    /// Alpha blending setters
+    //  They set stroke/fill alpha values + blending mode
+    //  and create related ExtGState objects (if not created earlier).
+    //  Using SetAlphaBlendMode over individual setters can limit registered ExtGStates.
+    procedure SetAlphaBlendMode(aAlpha_stroke, aAlpha_fill :Single; aBlend_mode :TPdfBlendMode);
+    procedure SetBlendMode(aBlend_mode :TPdfBlendMode);
+    procedure SetAlphaFill(aAlpha_fill :Single);
+    procedure SetAlphaStroke(aAlpha_stroke :Single);
+
     /// Modify the CTM by concatenating the specified matrix
     // - The current transformation matrix (CTM) maps positions from user
     // coordinates to device coordinates
@@ -2960,6 +3061,18 @@ function ScriptApplyDigitSubstitution(
     const psds: Pointer; const psControl: pointer;
     const psState: pointer): HRESULT; stdcall; external Usp10;
 
+{$ifdef USE_META_EXT_CHANNEL}
+//send AlphaBlend settings to pdf content through EMF (alpha 0-1)
+procedure SetAlphaBlendMode(canvas :TCanvas; stroke_alpha, fill_alpha :Single; blend_mode :TPdfBlendMode);
+//send AlphaBlend settings to pdf content through EMF (alpha 0-100)
+procedure SetAlphaBlend(canvas :TCanvas; stroke_alpha, fill_alpha :Byte; blend_mode :TPdfBlendMode);
+//send GSave to pdf content through EMF
+procedure GSave(canvas :TCanvas);
+//send GRestore to pdf content through EMF
+procedure GRestore(canvas :TCanvas);
+{$endif USE_META_EXT_CHANNEL}
+
+
 // C++Builder code should #include <usp10.h> directly instead of using these
 {$NODEFINE TScriptState }
 {$NODEFINE PScriptState }
@@ -4108,6 +4221,11 @@ end;
 procedure TPdfDictionary.AddItem(const AKey: PDFString; AValue: integer);
 begin
   AddItem(AKey,TPdfNumber.Create(AValue));
+end;
+
+procedure TPdfDictionary.AddItem(const AKey: PDFString; AValue: Double);
+begin
+  AddItem(AKey,TPdfReal.Create(AValue));
 end;
 
 procedure TPdfDictionary.AddItemText(const AKey, AValue: PDFString);
@@ -5712,6 +5830,7 @@ begin
   FreeDoc;
   FXref := TPdfXref.Create;
   FTrailer := TPdfTrailer.Create(FXref);
+  FExtGStateList := TList.Create;
   FFontList := TList.Create;
   FXObjectList := TPdfArray.Create(FXref);
   FXObjectList.FSaveAtTheEnd := true;
@@ -5856,6 +5975,12 @@ var i: integer;
 begin
   if FXObjectList<>nil then begin
     FreeAndNil(FXObjectList);
+    for i := FExtGStateList.Count-1 downto 0 do
+    begin
+      TObject(FExtGStateList.List[i]^).Free;
+      Dispose(FExtGStateList.List[i]);
+    end;
+    FreeAndNil(FExtGStateList);
     for i := FFontList.Count-1 downto 0 do
       TObject(FFontList.List[i]).Free;
     FreeAndNil(FFontList);
@@ -5982,6 +6107,7 @@ begin
         if Value<>FTrailer.FCrossReference then
           Value.WriteValueTo(fSaveToStreamWriter);
       end;
+
     FTrailer.XrefAddress := fSaveToStreamWriter.Position;
     if fFileFormat<pdf15 then
       FXref.WriteTo(fSaveToStreamWriter);
@@ -6459,6 +6585,93 @@ begin
       fFileFormat := pdf14;
 end;
 
+//create and add ExtGState object (to FExtGStateList and to xref)
+function TPdfDocument.AddExtGState(const aName: PDFString; const aAlpha_fill, aAlpha_stroke: Single; aBlend_mode :TPdfBlendMode): TPdfExtGState;
+var pgs :PPdfExtGState;
+    xref_id :Integer;
+begin
+  //adding new ExtGState to document FExtGStateList list
+  New(pgs);
+  TPdfExtGState(pgs^):=TPdfExtGState.Create;
+  with TPdfExtGState(pgs^) do
+  begin
+    SetName(aName);
+    SetAlpha(aAlpha_fill, aAlpha_stroke);
+    SetBlendMode(aBlend_mode);
+  end;
+  FExtGStateList.Add(pgs);
+
+  //adding new ExtGState object to xref list and remembering xref id
+  xref_id:=AddExtGState2Xref(pgs);
+  TPdfExtGState(pgs^).SetObjectNumber(xref_id);
+  result:=TPdfExtGState(pgs^);
+end;
+
+function BlendModeId2Str(aMode: TPdfBlendMode): String;
+begin
+  case aMode of
+    bmNormal:      result:='Normal';
+    bmMultiply:    result:='Multiply';
+    bmScreen:      result:='Screen';
+    bmOverlay:     result:='Overlay';
+    bmDarken:      result:='Darken';
+    bmLighten:     result:='Lighten';
+    bmColorDodge:  result:='Colordodge';
+    bmColorBurn:   result:='Colorburn';
+    bmHardLight:   result:='Hardlight';
+    bmSoftLight:   result:='Softlight';
+    bmDifference:  result:='Difference';
+    bmExclusion:   result:='Exclusion';
+    bmHue:         result:='Hue';
+    bmSaturation:  result:='Saturation';
+    bmColor:       result:='Color';
+    bmLuminosity:  result:='Luminosity';
+  else
+    result:='Normal'; //default fallback
+    //raise Exception.Create('Unknown ID of TPdfBlendMode');
+  end;
+end;
+
+//adding new ExtGState object to xref list
+function TPdfDocument.AddExtGState2Xref(pgs :PPdfExtGState): Integer;
+var ExtGState :TPdfDictionary;
+begin
+  ExtGState:=TPdfDictionary.Create(FXref);
+  ExtGState:=TPdfDictionary.Create(FXref);
+  ExtGState.AddItem('Type', TPDFName.create('ExtGState'));
+  ExtGState.AddItem('ca', TPDFReal.create(pgs^.Alpha_fill));
+  ExtGState.AddItem('CA', TPDFReal.create(pgs^.Alpha_stroke));
+  ExtGState.AddItem('BM', BlendModeId2Str(pgs^.Blend_mode));
+  FXref.AddObject(ExtGState);
+  result:=ExtGState.ObjectNumber;
+end;
+
+function TPdfDocument.FindExtGState(const aAlpha_fill, aAlpha_stroke: Single; aBlend_mode :TPdfBlendMode): TPdfExtGState;
+var i: Integer;
+begin
+  result:=nil;
+  for i:=0 to FExtGStateList.Count-1 do
+    if (Abs(TPdfExtGState(FExtGStateList[i]^).alpha_stroke - aAlpha_stroke) < 0.001) and
+       (Abs(TPdfExtGState(FExtGStateList[i]^).alpha_fill - aAlpha_fill) < 0.001) and
+       (TPdfExtGState(FExtGStateList[i]^).blend_mode = aBlend_mode) then
+    begin
+      result:=TPdfExtGState(FExtGStateList[i]^);
+      break;
+    end;
+end;
+
+function TPdfDocument.GetOrAddExtGState(const aAlpha_fill, aAlpha_stroke: Single; aBlend_mode :TPdfBlendMode): TPdfExtGState;
+var gs :TPdfExtGState;
+    gs_name :String;
+begin
+  gs:=FindExtGState(aAlpha_fill, aAlpha_stroke, aBlend_mode);
+  if gs<>nil then result:=gs
+  else
+  begin
+    gs_name:='GS'+IntToStr(FExtGStateList.Count);
+    result:=AddExtGState(gs_name, aAlpha_fill, aAlpha_stroke, aBlend_mode);
+  end;
+end;
 
 { TPdfCanvas }
 
@@ -6470,6 +6683,9 @@ begin
   FFactorY := FFactor;
   FDevScaleX := 1;
   FDevScaleY := 1;
+  FAlpha_stroke:=1;
+  FAlpha_fill:=1;
+  FBlend_mode:=bmNormal;
   FMappingMode := MM_TEXT;
   fUseMetaFileTextPositioning := tpSetTextJustification;
   fKerningHScaleBottom := 99.0;
@@ -6487,6 +6703,12 @@ procedure TPdfCanvas.SetPage(APage: TPdfPage);
 begin
   FPage := APage;
   FPageFontList := FPage.GetResources('Font');
+
+  //disabled to perform late init of ExtGState dictionary
+  //it will be added not earlier than first ExtGState will be added to a page
+  //FPageExtGStateList := FPage.GetResources('ExtGState');  //early init
+  FPageExtGStateList := nil;  //late init will be used
+
   FContents := TPdfStream(FPage.ValueByName('Contents'));
   FFactor := 72/FDoc.FScreenLogPixels; // PDF expect 72 pixels per inch
 end;
@@ -6949,6 +7171,63 @@ procedure TPdfCanvas.GRestore;
 begin
   if FContents<>nil then
     FContents.Writer.Add('Q'#10);
+end;
+
+procedure TPdfCanvas.SetBlendMode(aBlend_mode :TPdfBlendMode);
+begin
+  FBlend_mode:=aBlend_mode;
+  SetAlphaBlendMode(FAlpha_stroke, FAlpha_fill, FBlend_mode);
+end;
+
+procedure TPdfCanvas.SetAlphaFill(aAlpha_fill :Single);
+begin
+  FAlpha_fill:=aAlpha_fill;
+  SetAlphaBlendMode(FAlpha_stroke, FAlpha_fill, FBlend_mode);
+end;
+
+procedure TPdfCanvas.SetAlphaStroke(aAlpha_stroke :Single);
+begin
+  FAlpha_stroke:=aAlpha_stroke;
+  SetAlphaBlendMode(FAlpha_stroke, FAlpha_fill, FBlend_mode);
+end;
+
+//sets stroke/fill alpha values + blending mode and creates related ExtGState objects if needed
+//assumes alpha values from 0 to 1
+procedure TPdfCanvas.SetAlphaBlendMode(aAlpha_stroke, aAlpha_fill :Single; aBlend_mode :TPdfBlendMode);
+var gs :TPdfExtGState;
+begin
+  FAlpha_stroke:=aAlpha_stroke;  //setting actual settings in TPdfCanvas (useful for future methods setting only one element)
+  FAlpha_fill:=aAlpha_fill;
+  FBlend_mode:=aBlend_mode;
+  gs:=FDoc.GetOrAddExtGState(FAlpha_fill, FAlpha_stroke, FBlend_mode); //add ExtGState to TPdfDocument xref list
+  AddExtGStateToContents(gs);  //add gs to page content stream
+  RegisterExtGState(gs);       //conditional add of gs reference to page /Resources
+end;
+
+//add ExtGState reference to /ExtGState<<>> dict in page /Resources
+procedure TPdfCanvas.RegisterExtGState(gs :TPdfExtGState);
+begin
+  if gs<>nil then
+  begin
+    //Late init of ExtGState dictionary in page /Resources
+    //It is added when first ExtGState is to be added to a page.
+    if FPageExtGStateList = nil then
+      FPageExtGStateList := FPage.AddExtGStateDictToResources;
+
+    //Add reference to gs to the ExtGState dict in page /Resources
+    //(if not added earlier). Could be added unconditionally because
+    //identical entries are removed by AddItem, but then the order
+    //of ExtGState in /Resources would be somehow messy.
+    if FPageExtGStateList.ValueByName(gs.name)=nil then
+      FPageExtGStateList.AddItem(gs.name, gs);
+  end;
+end;
+
+//writes given ExtGState to page contents stream
+procedure TPdfCanvas.AddExtGStateToContents(gs :TPdfExtGState);
+begin
+  if FContents<>nil then
+    if gs<>nil then FContents.Writer.Add('/'+gs.name+' gs'#10);
 end;
 
 procedure TPdfCanvas.ConcatToCTM(a, b, c, d, e, f: Single; Decimals: Cardinal);
@@ -8801,6 +9080,20 @@ begin
   Result := PdfDictionaryByName('Resources').PdfDictionaryByName(AName);
 end;
 
+//Late init of ExtGState<<>> dictionary in page /Resources
+//It is used when first ExtGState is to be added to a page.
+function TPdfPage.AddExtGStateDictToResources: TPdfDictionary;
+var resources :TPdfDictionary;
+begin
+  resources:=PdfDictionaryByName('Resources');
+  Result := resources.PdfDictionaryByName('ExtGState');
+  if Result=nil then
+  begin
+    resources.AddItem('ExtGState', TPdfDictionary.Create(FDoc.FXref));
+    Result := resources.PdfDictionaryByName('ExtGState');
+  end;
+end;
+
 function TPdfPage.MeasureText(const Text: PDFString; Width: Single): integer;
 var ch: AnsiChar;
     tmpWidth: Single;
@@ -9182,8 +9475,349 @@ begin
   result.Y := (Rect.Bottom+Rect.Top) div 2;
 end;
 
+{$ifdef USE_META_EXT_CHANNEL}
+
+{TMetaExtChannel}
+
+// TMetaExtChannel provides a simple mechanism to encode PDF commands
+// (like alpha blending and save/restore operations) into a GDI-based
+// metafile stream by using special "signal" shapes based on polylines.
+//
+// These signal shapes, when identified during EMF parsing, can be
+// eliminated from drawing to avoid affecting the visual output. In the
+// SynPdf engine, this is done at the beginning of EnumEMFFunc().
+// In such cases, signals form a transparent, one-directional channel
+// to transport messages with commands.
+//
+// A signal includes two parts: header and data. Both header and data
+// are lists of TPoint and together form a signal polyline. To limit
+// the probability of conflict with the canvas content, the header
+// part can be one of two hopefully unique shapes:
+// - a polyline forming letters of the word 'SIGNAL' placed one over
+//   another (default), or
+// - a polyline forming a "zero-size" rectangle (0,0,0,0), which is
+//   faster but less safe.
+// For the same reason, it can be requested that a signal must be
+// sent/received multiple times to form a single message (default
+// message type is mtMultiPoly == 5 signals). In the current version
+// of TMetaExtChannel, each repetition of the signal includes
+// the same data.
+//
+// Remarks:
+//
+// 1: If speed is crucial, try using mtSinglePoly or mtMultiRect.
+//    One call to SetAlphaBlend takes 10.2 µs with mtMultiPoly, and
+//    2.1 µs with SinglePoly (i9-9900K 3.6 GHz).
+// 2: The message transport was tested to work correctly even
+//    when the target canvas size is below 16x16 points, but please
+//    pay special attention in such cases.
+// 3: It is suggested to use SetAlphaBlend, SetAlphaBlendMode, GSave,
+//    and GRestore wrappers for simplicity.
+// 4: GSave and GRestore, even when used on the GDI level, are just
+//    PDF-level operations (q and Q). They do not store/restore
+//    canvas colors or line style. Thus, please be cautious when
+//    mixing GDI/TMetafileCanvas operations with GSave/GRestore.
+
+type TMetaMessageType = (mtSinglePoly, mtMultiPoly, mtSingleRect, mtMultiRect);
+     TDynPointArray = array of TPoint;
+     TMetaExtChannel = class(TObject)
+     private
+       FMessageType :TMetaMessageType;
+       FSignalsCountExp :Word;
+       FSignalsCountAct :Word;
+       FSignalHeader :TDynPointArray;
+       FDataR,FDataG,FDataB :Byte;
+       const SIGNAL_CODE_SAVE = 16;
+       const SIGNAL_CODE_GRESTORE = 17;
+       const SIGNAL_REPEAT = 5;
+       //Specific polylines used as headers during sending signals
+       const SIGNAL_HEADER_LONG: array[0..26] of TPoint = (
+             {S} (X:7;Y:1), (X:1;Y:1), (X:1;Y:6), (X:7;Y:6), (X:7;Y:11), (X:1;Y:11),
+             {I} (X:4;Y:1), (X:4;Y:11),
+             {G} (X:7;Y:1), (X:1;Y:1), (X:1;Y:11), (X:7;Y:11), (X:7;Y:6), (X:4;Y:6),
+             {N} (X:1;Y:11), (X:1;Y:1), (X:7;Y:11), (X:7;Y:1),
+             {A} (X:4;Y:1), (X:1;Y:11), (X:7;Y:11), (X:4;Y:1), (X:2;Y:6), (X:6;Y:6),
+             {L} (X:1;Y:1), (X:1;Y:11), (X:7;Y:11));
+       const SIGNAL_HEADER_SHORT: array[0..3] of TPoint = (
+                 (X:0;Y:0), (X:0;Y:0), (X:0;Y:0), (X:0;Y:0));
+       procedure SetMessageType(const mt :TMetaMessageType);
+       //sender
+       procedure SendSignal(canvas :TCanvas);
+       //receiver
+       procedure CountMetaSignals(R: PEnhMetaRecord; E: TPdfEnum);
+       procedure ResetSignals;
+       function MetaMessageReceived :Boolean;
+       function GotAlphaBlendMessage(E: TPdfEnum; var aAlpha_fill, aAlpha_stroke :Single; var aBlend_mode :TPdfBlendMode) :Boolean;
+       function GotGSaveMessage(E: TPdfEnum) :Boolean;
+       function GotGRestoreMessage(E: TPdfEnum) :Boolean;
+     public
+       constructor Create;
+       //sender
+       procedure SendAlphaBlendMessage(canvas :TCanvas; stroke_alpha, fill_alpha :Byte; blend_mode :TPDFBlendMode);
+       procedure SendGSaveMessage(canvas :TCanvas);
+       procedure SendGRestoreMessage(canvas :TCanvas);
+       //receiver
+       function MetaSignalIdentified(R: PEnhMetaRecord; E: TPdfEnum) :Boolean;
+       procedure ProcessMessages(R: PEnhMetaRecord; E: TPdfEnum);
+     end;
+     TDataPoints = array[0..2] of TPoint;
+
+var meta_ext_channel: TMetaExtChannel;
+
+constructor TMetaExtChannel.Create;
+begin
+  inherited Create;
+  SetMessageType(mtMultiPoly);
+end;
+
+procedure TMetaExtChannel.ResetSignals;
+begin
+  FSignalsCountAct:=0;
+end;
+
+function ConcatPointArrays(A, B: array of TPoint): TDynPointArray;
+var  i: Integer;
+begin
+  SetLength(Result, Length(A) + Length(B));
+  for i := 0 to High(A) do Result[i] := A[i];
+  for i := 0 to High(B) do Result[Length(A) + i] := B[i];
+end;
+
+function CopyPointArray(A: array of TPoint): TDynPointArray;
+var  i: Integer;
+begin
+  SetLength(Result, Length(A));
+  for i := 0 to High(A) do Result[i] := A[i];
+end;
+
+procedure TMetaExtChannel.SetMessageType(const mt :TMetaMessageType);
+begin
+  FMessageType:=mt;
+  case FMessageType of
+  mtSinglePoly, mtSingleRect : FSignalsCountExp:=1;
+  mtMultiPoly,  mtMultiRect  : FSignalsCountExp:=SIGNAL_REPEAT;
+  end;
+  case FMessageType of
+  mtSinglePoly, mtMultiPoly : FSignalHeader:=CopyPointArray(SIGNAL_HEADER_LONG);
+  mtSingleRect, mtMultiRect : FSignalHeader:=CopyPointArray(SIGNAL_HEADER_SHORT);
+  end;
+  ResetSignals;
+end;
+
+//TMetaExtChannel sender
+
+//keeping data transport points in 16x16 range
+function SplitBytesToDataPoints(const r,g,b :Byte) :TDataPoints;
+begin
+  result[0].x:=(r and $F0) shr 4; result[0].y:=(r and $0F);
+  result[1].x:=(g and $F0) shr 4; result[1].y:=(g and $0F);
+  result[2].x:=(b and $F0) shr 4; result[2].y:=(b and $0F);
+end;
+
+procedure MergeDataPointsToBytes(const data: TDataPoints; out r, g, b: Byte);
+begin
+  r := (data[0].x shl 4) or (data[0].y and $0F);
+  g := (data[1].x shl 4) or (data[1].y and $0F);
+  b := (data[2].x shl 4) or (data[2].y and $0F);
+end;
+
+//send a polyline command to a given TCanvas which can be recognized
+//by SynPdf engine as a signal being a part of MetaExtChannel message
+procedure TMetaExtChannel.SendSignal(canvas :TCanvas);
+var i :Byte;
+    poly :TDynPointArray;
+begin
+  poly:=ConcatPointArrays(FSignalHeader,
+                          SplitBytesToDataPoints(FDataR,FDataG,FDataB));
+  for i:=1 to FSignalsCountExp do canvas.PolyLine(poly);
+end;
+
+//encode alpha blend info and inject it with a signal to TCanvas
+procedure TMetaExtChannel.SendAlphaBlendMessage(canvas :TCanvas; stroke_alpha, fill_alpha :Byte; blend_mode :TPDFBlendMode);
+begin
+  FDataR:=stroke_alpha;
+  FDataG:=fill_alpha;
+  FDataB:=Byte(blend_mode);
+  SendSignal(canvas);
+end;
+
+//encode GSave info and inject it with a signal to TCanvas
+procedure TMetaExtChannel.SendGSaveMessage(canvas :TCanvas);
+begin
+  FDataR:=SIGNAL_CODE_SAVE; FDataG:=FDataR; FDataB:=FDataR;
+  SendSignal(canvas);
+end;
+
+//encode GRestore info and inject it with a signal to TCanvas
+procedure TMetaExtChannel.SendGRestoreMessage(canvas :TCanvas);
+begin
+  FDataR:=SIGNAL_CODE_GRESTORE; FDataG:=FDataR; FDataB:=FDataR;
+  SendSignal(canvas);
+end;
+
+//send AlphaBlend settings to pdf content through EMF (alpha 0-1)
+procedure SetAlphaBlendMode(canvas :TCanvas; stroke_alpha, fill_alpha :Single; blend_mode :TPdfBlendMode);
+var bStroke_alpha, bFill_alpha :Byte;
+begin
+  bStroke_alpha:=Round(stroke_alpha*100);
+  bFill_alpha:=Round(fill_alpha*100);
+  if bStroke_alpha>100 then stroke_alpha:=100;
+  if bFill_alpha>100 then fill_alpha:=100;
+  meta_ext_channel.SendAlphaBlendMessage(canvas, bStroke_alpha, bFill_alpha, blend_mode);
+end;
+
+//send AlphaBlend settings to pdf content through EMF (alpha 0-100)
+procedure SetAlphaBlend(canvas :TCanvas; stroke_alpha, fill_alpha :Byte; blend_mode :TPdfBlendMode);
+begin
+  meta_ext_channel.SendAlphaBlendMessage(canvas, stroke_alpha, fill_alpha, blend_mode);
+end;
+
+//send GSave to pdf content through EMF
+procedure GSave(canvas :TCanvas);
+begin
+  meta_ext_channel.SendGSaveMessage(canvas);
+end;
+
+//send GRestore to pdf content through EMF
+procedure GRestore(canvas :TCanvas);
+begin
+  meta_ext_channel.SendGRestoreMessage(canvas);
+end;
+
+//TMetaExtChannel receiver
+
+//check if EMF stream command is a defined signal sent with TMetaExtChannel
+function TMetaExtChannel.MetaSignalIdentified(R: PEnhMetaRecord; E: TPdfEnum) :Boolean;
+var i,j :Integer;
+    res :Boolean;
+    data_points :TDataPoints;
+begin
+  result:=False;
+  FDataR:=0;FDataG:=0;FDataB:=0;
+  with E.DC[E.nDC] do
+  case R^.iType of
+    EMR_POLYLINE16: //case of 16 bit optimization in GDI (typical)
+    begin
+      if PEMRPolyLine16(R)^.cpts = Length(FSignalHeader)+Length(data_points) then
+      begin
+        res:=True;  //checking the header
+        for i:=0 to Length(FSignalHeader)-1 do
+          if (PEMRPolyLine16(R)^.apts[i].X <> FSignalHeader[i].X) or
+             (PEMRPolyLine16(R)^.apts[i].Y <> FSignalHeader[i].Y) then
+          begin
+            res:=False;
+            break;
+          end;
+        result:=res;
+        if result=True then
+        begin
+          j:=0;     //getting payload
+          for i:=Length(FSignalHeader) to PEMRPolyLine16(R)^.cpts-1 do   //getting data
+          begin
+            data_points[j].x:=PEMRPolyLine16(R)^.apts[i].X;
+            data_points[j].y:=PEMRPolyLine16(R)^.apts[i].y;
+            j:=j+1;
+          end;
+          MergeDataPointsToBytes(data_points, FDataR,FDataG,FDataB);
+        end;
+      end;
+    end;
+    EMR_POLYLINE:   //case when GDI is forced to avoid 16 bit optimizations
+    begin
+      if PEMRPolyLine(R)^.cptl = Length(FSignalHeader)+Length(data_points) then
+      begin
+        res:=True;  //checking the header
+        for i:=0 to Length(FSignalHeader)-1 do
+          if (PEMRPolyLine(R)^.aptl[i].X <> FSignalHeader[i].X) or
+             (PEMRPolyLine(R)^.aptl[i].Y <> FSignalHeader[i].Y) then
+          begin
+            res:=False;
+            break;
+          end;
+        result:=res;
+        if result=True then
+        begin
+          j:=0;     //getting payload
+          for i:=Length(FSignalHeader) to PEMRPolyLine(R)^.cptl-1 do
+          begin
+            data_points[j].x:=PEMRPolyLine(R)^.aptl[i].X;
+            data_points[j].y:=PEMRPolyLine(R)^.aptl[i].y;
+            j:=j+1;
+          end;
+          MergeDataPointsToBytes(data_points, FDataR,FDataG,FDataB);
+        end;
+      end;
+    end;
+  end;
+end;
+
+procedure TMetaExtChannel.CountMetaSignals(R: PEnhMetaRecord; E: TPdfEnum);
+begin          //assumption: only consecutive signals form a message
+  if MetaSignalIdentified(R,E) then Inc(FSignalsCountAct)
+  else ResetSignals;
+end;
+
+function TMetaExtChannel.MetaMessageReceived :Boolean;
+begin
+  if FSignalsCountAct = FSignalsCountExp then
+  begin
+    ResetSignals;
+    result:=True;
+  end
+  else result:=False;
+end;
+
+//decoding and verification of AlphaBlend meta message
+function TMetaExtChannel.GotAlphaBlendMessage(E: TPdfEnum; var aAlpha_fill, aAlpha_stroke :Single; var aBlend_mode :TPdfBlendMode) :Boolean;
+begin
+  result:=False;
+  aAlpha_stroke:=1; aAlpha_fill:=1; aBlend_mode:=bmNormal;
+  if (FDataR<=100) and (FDataG<=100) and (FDataB>=0) and (FDataB<=15) then
+  begin
+    aAlpha_stroke:=FDataR/100;
+    aAlpha_fill:=FDataG/100;
+    aBlend_mode:=TPdfBlendMode(FDataB);
+    result:=True;
+  end;
+end;
+
+//decoding and verification of GSave meta message
+function TMetaExtChannel.GotGSaveMessage(E: TPdfEnum) :Boolean;
+begin
+  result:=False;
+  if (FDataR=SIGNAL_CODE_SAVE) and (FDataG=FDataR) and (FDataB=FDataR)
+  then result:=True;
+end;
+
+//decoding and verification of GRestore meta message
+function TMetaExtChannel.GotGRestoreMessage(E: TPdfEnum) :Boolean;
+begin
+  result:=False;
+  if (FDataR=SIGNAL_CODE_GRESTORE) and (FDataG=FDataR) and (FDataB=FDataR)
+  then result:=True;
+end;
+
+//The main part of the TMetaExtChannel receiver - identifies messages
+//and performs appropriate operations on the TPdfCanvas.
+//Intended for use in EnumEMFFunc EMF enumeration callback function.
+procedure TMetaExtChannel.ProcessMessages(R: PEnhMetaRecord; E: TPdfEnum);
+var FAlpha_fill, FAlpha_stroke :Single;
+    FBlend_mode :TPdfBlendMode;
+begin
+  CountMetaSignals(R,E); //resets signals counter if non-signal detected
+  if MetaMessageReceived then //resets signals counter if message (enough number of signals) was received
+  begin
+    if GotAlphaBlendMessage(E, FAlpha_fill, FAlpha_stroke, FBlend_mode) then
+      E.Canvas.SetAlphaBlendMode(FAlpha_fill, FAlpha_stroke, FBlend_mode);
+    if GotGSaveMessage(E) then E.Canvas.GSave; //put PDF state on stack
+    if GotGRestoreMessage(E) then E.Canvas.GRestore; //get PDF state from stack
+  end;
+end;
+{$endif USE_META_EXT_CHANNEL}
+
 /// EMF enumeration callback function, called from GDI
 // - draw most content on PDF canvas (do not render 100% GDI content yet)
+// - extended with TMetaExtChannel to support non GDI commands
 function EnumEMFFunc(DC: HDC; var Table: THandleTable; R: PEnhMetaRecord;
    NumObjects: DWord; E: TPdfEnum): LongBool; stdcall;
 var i: integer;
@@ -9191,6 +9825,10 @@ var i: integer;
     polytypes: PByteArray;
 begin
   result := true;
+  {$ifdef USE_META_EXT_CHANNEL}
+  meta_ext_channel.ProcessMessages(R,E);
+  if not meta_ext_channel.MetaSignalIdentified(R,E) then  //do not draw received meta signals
+  {$endif USE_META_EXT_CHANNEL}
   with E.DC[E.nDC] do
   case R^.iType of
   EMR_HEADER: begin
@@ -11245,6 +11883,47 @@ begin
   inherited;
 end;
 
+{ TPdfExtGState }
+
+constructor TPdfExtGState.Create;
+begin
+  inherited Create;
+  SetObjectNumber(-1);
+end;
+
+constructor TPdfExtGState.Create(const aName: String; const aAlpha_fill, aAlpha_stroke: Double; const aMode: TPdfBlendMode);
+begin
+  Create;
+  SetName(aName);
+  SetAlpha(aAlpha_fill, aAlpha_stroke);
+  SetBlendMode(bmNormal);
+end;
+
+procedure TPdfExtGState.SetName(const aName: String);
+begin
+  name:=aName;
+end;
+
+procedure TPdfExtGState.SetAlphaFill(const aAlpha: Double);
+begin
+  alpha_fill:=aAlpha;
+end;
+
+procedure TPdfExtGState.SetAlphaStroke(const aAlpha: Double);
+begin
+  alpha_stroke:=aAlpha;
+end;
+
+procedure TPdfExtGState.SetAlpha(const aAlpha_fill, aAlpha_stroke: Double);
+begin
+  SetAlphaFill(aAlpha_fill);
+  SetAlphaStroke(aAlpha_stroke);
+end;
+
+procedure TPdfExtGState.SetBlendMode(const aMode: TPdfBlendMode);
+begin
+  blend_mode:=aMode;
+end;
 
 initialization
   {$ifdef USE_SYNGDIPLUS}
@@ -11252,6 +11931,10 @@ initialization
   if (Gdip=nil) and not IsLibrary then
     Gdip := TGDIPlus.Create('gdiplus.dll');
   {$endif}
+
+  {$ifdef USE_META_EXT_CHANNEL}
+  meta_ext_channel:=TMetaExtChannel.Create;
+  {$endif USE_META_EXT_CHANNEL}
 
 finalization
   if (FontSub<>0) and (FontSub<>INVALID_HANDLE_VALUE) then
