@@ -105,4 +105,4 @@ Related Topics at Synopse Forum:
 ------------------------
 A Synopse forum topics about this component:
 
-[https://synopse.info/forum/viewtopic.php?id=7305](https://synopse.info/forum/viewtopic.php?id=7305)
+[https://synopse.info/forum/viewtopic.php?id=7316](https://synopse.info/forum/viewtopic.php?id=7316)
