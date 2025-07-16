@@ -24,6 +24,10 @@ Each generated example pdf  is very simple and contains two pages:
 
 <img width="340" height="210" alt="Example" src="https://github.com/user-attachments/assets/9222f531-a0d2-4f93-8280-7736e27c826c" />
 
+![<img width="340" height="210" alt="Example" src="https://github.com/user-attachments/assets/9222f531-a0d2-4f93-8280-7736e27c826c" />](/documents/alpha_blending_with_GDI_and_MetaExtChannel.pdf)
+
+
+
 <!--![Screenshot of a PDF generated with EMF/TMetaExtChannel commands](/assets/images/example2.png) -->
 
 To generate pages of the second file, one can use procedures:
